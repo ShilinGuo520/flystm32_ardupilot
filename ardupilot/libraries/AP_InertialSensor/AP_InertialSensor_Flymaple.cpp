@@ -12,146 +12,323 @@
 
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-/*
-  Flymaple port by Mike McCauley
- */
+ 
+    -- Coded by Victor Mayoral Vilches --    
 
-// Interface to the Flymaple sensors:
-// ITG3205 Gyroscope  http://www.sparkfun.com/datasheets/Sensors/Gyro/PS-ITG-3200-00-01.4.pdf
-// ADXL345 Accelerometer http://www.analog.com/static/imported-files/data_sheets/ADXL345.pdf
+    The Flymaple is a sensor composed by a MPU6050 with a AK8975 on the auxiliary bus.
+    Please check the following links for datasheets and documentation:
+     - http://www.invensense.com/mems/gyro/documents/PS-MPU-9150A-00v4_3.pdf
+     - http://www.invensense.com/mems/gyro/documents/RM-MPU-9150A-00v4_2.pdf
+*/
 
 #include <AP_HAL.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_FLYMAPLE
-
+#include <AP_Math.h>
 #include "AP_InertialSensor_Flymaple.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <time.h>     
 
 const extern AP_HAL::HAL& hal;
 
-/// Statics
-Vector3f AP_InertialSensor_Flymaple::_accel_filtered;
-uint32_t AP_InertialSensor_Flymaple::_accel_samples;
-Vector3f AP_InertialSensor_Flymaple::_gyro_filtered;
-uint32_t AP_InertialSensor_Flymaple::_gyro_samples;
-uint64_t AP_InertialSensor_Flymaple::_last_accel_timestamp;
-uint64_t AP_InertialSensor_Flymaple::_last_gyro_timestamp;
-LowPassFilter2p AP_InertialSensor_Flymaple::_accel_filter_x(800, 10);
-LowPassFilter2p AP_InertialSensor_Flymaple::_accel_filter_y(800, 10);
-LowPassFilter2p AP_InertialSensor_Flymaple::_accel_filter_z(800, 10);
-LowPassFilter2p AP_InertialSensor_Flymaple::_gyro_filter_x(800, 10);
-LowPassFilter2p AP_InertialSensor_Flymaple::_gyro_filter_y(800, 10);
-LowPassFilter2p AP_InertialSensor_Flymaple::_gyro_filter_z(800, 10);
-
-// This is how often we wish to make raw samples of the sensors in Hz
-const uint32_t  raw_sample_rate_hz = 800;
-// And the equivalent time between samples in microseconds
-const uint32_t  raw_sample_interval_us = (1000000 / raw_sample_rate_hz);
-
 ///////
-/// Accelerometer ADXL345 register definitions
-#define FLYMAPLE_ACCELEROMETER_ADDRESS              0x53
-#define FLYMAPLE_ACCELEROMETER_XL345_DEVID          0xe5
-#define FLYMAPLE_ACCELEROMETER_ADXLREG_BW_RATE      0x2c
-#define FLYMAPLE_ACCELEROMETER_ADXLREG_POWER_CTL    0x2d
-#define FLYMAPLE_ACCELEROMETER_ADXLREG_DATA_FORMAT  0x31
-#define FLYMAPLE_ACCELEROMETER_ADXLREG_DEVID        0x00
-#define FLYMAPLE_ACCELEROMETER_ADXLREG_DATAX0       0x32
-#define FLYMAPLE_ACCELEROMETER_GRAVITY              248
+/* Hardware registers needed by driver. */
+struct gyro_reg_s {
+    uint8_t who_am_i;
+    uint8_t rate_div;
+    uint8_t lpf;
+    uint8_t prod_id;
+    uint8_t user_ctrl;
+    uint8_t fifo_en;
+    uint8_t gyro_cfg;
+    uint8_t accel_cfg;
+    uint8_t motion_thr;
+    uint8_t motion_dur;
+    uint8_t fifo_count_h;
+    uint8_t fifo_r_w;
+    uint8_t raw_gyro;
+    uint8_t raw_accel;
+    uint8_t temp;
+    uint8_t int_enable;
+    uint8_t dmp_int_status;
+    uint8_t int_status;
+    uint8_t pwr_mgmt_1;
+    uint8_t pwr_mgmt_2;
+    uint8_t int_pin_cfg;
+    uint8_t mem_r_w;
+    uint8_t accel_offs;
+    uint8_t i2c_mst;
+    uint8_t bank_sel;
+    uint8_t mem_start_addr;
+    uint8_t prgm_start_h;
+    uint8_t raw_compass;    
+    uint8_t yg_offs_tc;
+    uint8_t s0_addr;
+    uint8_t s0_reg;
+    uint8_t s0_ctrl;
+    uint8_t s1_addr;
+    uint8_t s1_reg;
+    uint8_t s1_ctrl;
+    uint8_t s4_ctrl;
+    uint8_t s0_do;
+    uint8_t s1_do;
+    uint8_t i2c_delay_ctrl;
+};
 
-// ADXL345 accelerometer scaling
-// Result will be scaled to 1m/s/s
-// ADXL345 in Full resolution mode (any g scaling) is 256 counts/g, so scale by 9.81/256 = 0.038320312
-#define FLYMAPLE_ACCELEROMETER_SCALE_M_S    (GRAVITY_MSS / 256.0f)
+/* Information specific to a particular device. */
+struct hw_s {
+    uint8_t addr;
+    uint16_t max_fifo;
+    uint8_t num_reg;
+    uint16_t temp_sens;
+    int16_t temp_offset;
+    uint16_t bank_size;
+    uint16_t compass_fsr;
+};
 
-/// Gyro ITG3205 register definitions
-#define FLYMAPLE_GYRO_ADDRESS                       0x68
-#define FLYMAPLE_GYRO_WHO_AM_I                      0x00
-#define FLYMAPLE_GYRO_PWR_MGM                       0x3e
-#define FLYMAPLE_GYRO_DLPF_FS                       0x16
-#define FLYMAPLE_GYRO_INT_CFG                       0x17
-#define FLYMAPLE_GYRO_SMPLRT_DIV                    0x15
-#define FLYMAPLE_GYRO_GYROX_H                       0x1d
+/* Information for self-test. */
+struct test_s {
+    uint32_t gyro_sens;
+    uint32_t accel_sens;
+    uint8_t reg_rate_div;
+    uint8_t reg_lpf;
+    uint8_t reg_gyro_fsr;
+    uint8_t reg_accel_fsr;
+    uint16_t wait_ms;
+    uint8_t packet_thresh;
+    float min_dps;
+    float max_dps;
+    float max_gyro_var;
+    float min_g;
+    float max_g;
+    float max_accel_var;
+};
 
-// ITG3200 Gyroscope scaling
-// ITG3200 is 14.375 LSB degrees/sec with FS_SEL=3
-// Result wil be radians/sec
-#define FLYMAPLE_GYRO_SCALE_R_S (1.0f / 14.375f) * (3.1415926f / 180.0f)
+/* Gyro driver state variables. */
+struct gyro_state_s {
+    const struct gyro_reg_s *reg;
+    const struct hw_s *hw;
+    const struct test_s *test;
+};
 
-uint16_t AP_InertialSensor_Flymaple::_init_sensor( Sample_rate sample_rate ) 
+/* Filter configurations. The values correspond to the DLPF_CFG register.
+Note that the gyro and accel frequencies are slightly different.
+ (DLPF_CFG register, RM-MPU-9150A00.pdf, pg. 13)
+*/
+enum lpf_e {
+    INV_FILTER_256HZ_NOLPF2 = 0,
+    INV_FILTER_188HZ = 1,
+    INV_FILTER_98HZ = 2,
+    INV_FILTER_42HZ = 3,
+    INV_FILTER_20HZ = 4,
+    INV_FILTER_10HZ = 5,
+    INV_FILTER_5HZ = 6,
+    INV_FILTER_2100HZ_NOLPF = 7,
+    NUM_FILTER
+};
+
+/* Full scale ranges. FS_SEL register.
+ (RM-MPU-9150A00.pdf, pg. 14)
+ */
+enum gyro_fsr_e {
+    INV_FSR_250DPS = 0,
+    INV_FSR_500DPS = 1,
+    INV_FSR_1000DPS = 2,
+    INV_FSR_2000DPS = 3,
+    NUM_GYRO_FSR
+};
+
+/* Full scale ranges. AFS_SEL register.
+ (RM-MPU-9150A00.pdf, pg. 15)
+*/
+enum accel_fsr_e {
+    INV_FSR_2G = 0,
+    INV_FSR_4G = 1,
+    INV_FSR_8G = 2,
+    INV_FSR_16G = 4,
+    NUM_ACCEL_FSR
+};
+
+/* Clock sources. */
+enum clock_sel_e {
+    INV_CLK_INTERNAL = 0,
+    INV_CLK_PLL,
+    NUM_CLK
+};
+
+#define Flymaple_ADDRESS                  0x68
+
+#define INV_X_GYRO      (0x40)
+#define INV_Y_GYRO      (0x20)
+#define INV_Z_GYRO      (0x10)
+#define INV_XYZ_GYRO    (INV_X_GYRO | INV_Y_GYRO | INV_Z_GYRO)
+#define INV_XYZ_ACCEL   (0x08)
+#define INV_XYZ_COMPASS (0x01)
+
+#define MPU_INT_STATUS_DATA_READY       (0x0001)
+#define MPU_INT_STATUS_DMP              (0x0002)
+#define MPU_INT_STATUS_PLL_READY        (0x0004)
+#define MPU_INT_STATUS_I2C_MST          (0x0008)
+#define MPU_INT_STATUS_FIFO_OVERFLOW    (0x0010)
+#define MPU_INT_STATUS_ZMOT             (0x0020)
+#define MPU_INT_STATUS_MOT              (0x0040)
+#define MPU_INT_STATUS_FREE_FALL        (0x0080)
+#define MPU_INT_STATUS_DMP_0            (0x0100)
+#define MPU_INT_STATUS_DMP_1            (0x0200)
+#define MPU_INT_STATUS_DMP_2            (0x0400)
+#define MPU_INT_STATUS_DMP_3            (0x0800)
+#define MPU_INT_STATUS_DMP_4            (0x1000)
+#define MPU_INT_STATUS_DMP_5            (0x2000)
+
+#define BIT_I2C_MST_VDDIO   (0x80)
+#define BIT_FIFO_EN         (0x40)
+#define BIT_DMP_EN          (0x80)
+#define BIT_FIFO_RST        (0x04)
+#define BIT_DMP_RST         (0x08)
+#define BIT_FIFO_OVERFLOW   (0x10)
+#define BIT_DATA_RDY_EN     (0x01)
+#define BIT_DMP_INT_EN      (0x02)
+#define BIT_MOT_INT_EN      (0x40)
+#define BITS_FSR            (0x18)
+#define BITS_LPF            (0x07)
+#define BITS_HPF            (0x07)
+#define BITS_CLK            (0x07)
+#define BIT_FIFO_SIZE_1024  (0x40)
+#define BIT_FIFO_SIZE_2048  (0x80)
+#define BIT_FIFO_SIZE_4096  (0xC0)
+#define BIT_RESET           (0x80)
+#define BIT_SLEEP           (0x40)
+#define BIT_S0_DELAY_EN     (0x01)
+#define BIT_S2_DELAY_EN     (0x04)
+#define BITS_SLAVE_LENGTH   (0x0F)
+#define BIT_SLAVE_BYTE_SW   (0x40)
+#define BIT_SLAVE_GROUP     (0x10)
+#define BIT_SLAVE_EN        (0x80)
+#define BIT_I2C_READ        (0x80)
+#define BITS_I2C_MASTER_DLY (0x1F)
+#define BIT_AUX_IF_EN       (0x20)
+#define BIT_ACTL            (0x80)
+#define BIT_LATCH_EN        (0x20)
+#define BIT_ANY_RD_CLR      (0x10)
+#define BIT_BYPASS_EN       (0x02)
+#define BITS_WOM_EN         (0xC0)
+#define BIT_LPA_CYCLE       (0x20)
+#define BIT_STBY_XA         (0x20)
+#define BIT_STBY_YA         (0x10)
+#define BIT_STBY_ZA         (0x08)
+#define BIT_STBY_XG         (0x04)
+#define BIT_STBY_YG         (0x02)
+#define BIT_STBY_ZG         (0x01)
+#define BIT_STBY_XYZA       (BIT_STBY_XA | BIT_STBY_YA | BIT_STBY_ZA)
+#define BIT_STBY_XYZG       (BIT_STBY_XG | BIT_STBY_YG | BIT_STBY_ZG)
+// AK8975_SECONDARY
+#define SUPPORTS_AK89xx_HIGH_SENS   (0x00)
+#define AK89xx_FSR                  (9830)
+#define MAX_COMPASS_SAMPLE_RATE (100)
+
+// Gyroscope scale (uncertain where the 0.01745 value comes from)
+#define Flymaple_GYRO_SCALE_2000  (0.0174532f / 16.4f)
+#define Flymaple_GYRO_SCALE_1000  (0.0174532f / 32.8f)
+#define Flymaple_GYRO_SCALE_500  (0.0174532f / 65.5f)
+#define Flymaple_GYRO_SCALE_250  (0.0174532f / 131f)
+
+// Accelerometer scale adjustment
+#define Flymaple_ACCEL_SCALE_16G    (GRAVITY_MSS / 2048.0f)
+#define Flymaple_ACCEL_SCALE_8G    (GRAVITY_MSS / 4096.0f)
+#define Flymaple_ACCEL_SCALE_4G    (GRAVITY_MSS / 8192.0f)
+#define Flymaple_ACCEL_SCALE_2G    (GRAVITY_MSS / 16384.0f)
+
+
+const struct gyro_reg_s reg = {
+/*    .who_am_i      */ 0x75,
+/*    .rate_div      */ 0x19,
+/*    .lpf           */ 0x1A,
+/*    .prod_id       */ 0x0C,
+/*    .user_ctrl     */ 0x6A,
+/*    .fifo_en       */ 0x23,
+/*    .gyro_cfg      */ 0x1B,
+/*    .accel_cfg     */ 0x1C,
+/*    .motion_thr    */ 0x1F,
+/*    .motion_dur    */ 0x20,
+/*    .fifo_count_h  */ 0x72,
+/*    .fifo_r_w      */ 0x74,
+/*    .raw_gyro      */ 0x43,
+/*    .raw_accel     */ 0x3B,
+/*    .temp          */ 0x41,
+/*    .int_enable    */ 0x38,
+/*    .dmp_int_status*/ 0x39,
+/*    .int_status    */ 0x3A,
+/*    .pwr_mgmt_1    */ 0x6B,
+/*    .pwr_mgmt_2    */ 0x6C,
+/*    .int_pin_cfg   */ 0x37,
+/*    .mem_r_w       */ 0x6F,
+/*    .accel_offs    */ 0x06,
+/*    .i2c_mst       */ 0x24,
+/*    .bank_sel      */ 0x6D,
+/*    .mem_start_addr*/ 0x6E,
+/*    .prgm_start_h  */ 0x70,
+/*    .raw_compass   */ 0x49,
+/*    .yg_offs_tc    */ 0x01,
+/*    .s0_addr       */ 0x25,
+/*    .s0_reg        */ 0x26,
+/*    .s0_ctrl       */ 0x27,
+/*    .s1_addr       */ 0x28,
+/*    .s1_reg        */ 0x29,
+/*    .s1_ctrl       */ 0x2A,
+/*    .s4_ctrl       */ 0x34,
+/*    .s0_do         */ 0x63,
+/*    .s1_do         */ 0x64,
+/*    .i2c_delay_ctrl*/ 0x67
+};
+
+const struct hw_s hw = {
+/*    .addr          */ 0x68,
+/*    .max_fifo      */ 1024,
+/*    .num_reg       */ 118,
+/*    .temp_sens     */ 340,
+/*    .temp_offset   */ -521,
+/*    .bank_size     */ 256,
+/*    .compass_fsr   */ AK89xx_FSR
+
+};
+
+const struct test_s test = {
+/*    .gyro_sens     */ 32768/250,
+/*    .accel_sens    */ 32768/16,
+/*    .reg_rate_div  */ 0,    /* 1kHz. */
+/*    .reg_lpf       */ 1,    /* 188Hz. */
+/*    .reg_gyro_fsr  */ 0,    /* 250dps. */
+/*    .reg_accel_fsr */ 0x18, /* 16g. */
+/*    .wait_ms       */ 50,
+/*    .packet_thresh */ 5,    /* 5% */
+/*    .min_dps       */ 10.f,
+/*    .max_dps       */ 105.f,
+/*    .max_gyro_var  */ 0.14f,
+/*    .min_g         */ 0.3f,
+/*    .max_g         */ 0.95f,
+/*    .max_accel_var */ 0.14f
+};
+
+static struct gyro_state_s st = {
+/*    .reg  */ &reg,
+/*    .hw   */ &hw,    
+/*    .test */ &test
+   
+};
+
+/**
+ *  @brief      Constructor
+ */
+AP_InertialSensor_Flymaple::AP_InertialSensor_Flymaple() :
+    AP_InertialSensor(),
+    _accel_filter_x(800, 10),
+    _accel_filter_y(800, 10),
+    _accel_filter_z(800, 10),
+    _gyro_filter_x(800, 10),
+    _gyro_filter_y(800, 10),
+    _gyro_filter_z(800, 10)    
 {
-    // Sensors are raw sampled at 800Hz.
-    // Here we figure the divider to get the rate that update should be called
-    switch (sample_rate) {
-    case RATE_50HZ:
-        _sample_divider = raw_sample_rate_hz / 50;
-        _default_filter_hz = 10;
-        break;
-    case RATE_100HZ:
-        _sample_divider = raw_sample_rate_hz / 100;
-        _default_filter_hz = 20;
-        break;
-    case RATE_200HZ:
-    default:
-        _sample_divider = raw_sample_rate_hz / 200;
-        _default_filter_hz = 20;
-        break;
-    }
 
-    // get pointer to i2c bus semaphore
-    AP_HAL::Semaphore* i2c_sem = hal.i2c->get_semaphore();
-
-    // take i2c bus sempahore
-    if (!i2c_sem->take(HAL_SEMAPHORE_BLOCK_FOREVER))
-        return false;
-
-    // Init the accelerometer
-    uint8_t data;
-    hal.i2c->readRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_DEVID, &data);
-    if (data != FLYMAPLE_ACCELEROMETER_XL345_DEVID)
-        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: could not find ADXL345 accelerometer sensor"));
-    hal.i2c->writeRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_POWER_CTL, 0x00);
-    hal.scheduler->delay(5);
-    hal.i2c->writeRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_POWER_CTL, 0xff);
-    hal.scheduler->delay(5);
-    // Measure mode:
-    hal.i2c->writeRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_POWER_CTL, 0x08);
-    hal.scheduler->delay(5);
-    // Full resolution, 8g:
-    // Caution, this must agree with FLYMAPLE_ACCELEROMETER_SCALE_1G
-    // In full resoution mode, the scale factor need not change
-    hal.i2c->writeRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_DATA_FORMAT, 0x08);
-    hal.scheduler->delay(5);
-    // Normal power, 800Hz Output Data Rate, 400Hz bandwidth:
-    hal.i2c->writeRegister(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_BW_RATE, 0x0d);
-    hal.scheduler->delay(5);
-    // Power up default is FIFO bypass mode. FIFO is not used by the chip
-
-    // Init the Gyro
-    // Expect to read the same as the Gyro I2C adress:
-    hal.i2c->readRegister(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_WHO_AM_I, &data);
-    if (data != FLYMAPLE_GYRO_ADDRESS)
-        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: could not find ITG-3200 accelerometer sensor"));
-    hal.i2c->writeRegister(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_PWR_MGM, 0x00);
-    hal.scheduler->delay(1);
-    // Sample rate divider: with 8kHz internal clock (see FLYMAPLE_GYRO_DLPF_FS), 
-    // get 500Hz sample rate, 2 samples
-    hal.i2c->writeRegister(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_SMPLRT_DIV, 0x0f);
-    hal.scheduler->delay(1);
-    // 2000 degrees/sec, 256Hz LPF, 8kHz internal sample rate
-    // This is the least amount of filtering we can configure for this device
-    hal.i2c->writeRegister(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_DLPF_FS, 0x18);
-    hal.scheduler->delay(1);
-    // No interrupts
-    hal.i2c->writeRegister(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_INT_CFG, 0x00);
-    hal.scheduler->delay(1);
-
-    // Set up the filter desired
-    _set_filter_frequency(_mpu6000_filter);
-
-   // give back i2c semaphore
-    i2c_sem->give();
-
-    return AP_PRODUCT_ID_FLYMAPLE;
 }
 
 /*
@@ -162,47 +339,585 @@ void AP_InertialSensor_Flymaple::_set_filter_frequency(uint8_t filter_hz)
     if (filter_hz == 0)
         filter_hz = _default_filter_hz;
 
-    _accel_filter_x.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
-    _accel_filter_y.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
-    _accel_filter_z.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
-    _gyro_filter_x.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
-    _gyro_filter_y.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
-    _gyro_filter_z.set_cutoff_frequency(raw_sample_rate_hz, filter_hz);
+    _accel_filter_x.set_cutoff_frequency(800, filter_hz);
+    _accel_filter_y.set_cutoff_frequency(800, filter_hz);
+    _accel_filter_z.set_cutoff_frequency(800, filter_hz);
+    _gyro_filter_x.set_cutoff_frequency(800, filter_hz);
+    _gyro_filter_y.set_cutoff_frequency(800, filter_hz);
+    _gyro_filter_z.set_cutoff_frequency(800, filter_hz);
 }
 
-/*================ AP_INERTIALSENSOR PUBLIC INTERFACE ==================== */
+/**
+ *  @brief      Init method
+ *  @param[in] Sample_rate  The sample rate, check the struct def.
+ *  @return     AP_PRODUCT_ID_PIXHAWK_FIRE_CAPE if successful.
+ */
+uint16_t AP_InertialSensor_Flymaple::_init_sensor( Sample_rate sample_rate ) 
+{
+    // Sensors pushed to the FIFO.
+    uint8_t sensors;
 
-// This takes about 20us to run
+    switch (sample_rate) {
+    case RATE_50HZ:
+        _default_filter_hz = 10;
+        _sample_period_usec = (1000*1000) / 50;
+        break;
+    case RATE_100HZ:
+        _default_filter_hz = 20;
+        _sample_period_usec = (1000*1000) / 100;
+        break;
+    case RATE_200HZ:
+        _default_filter_hz = 20;
+        _sample_period_usec = 5000;
+        break;
+    case RATE_400HZ:
+    default:
+        _default_filter_hz = 20;
+        _sample_period_usec = 2500;
+        break;
+    }
+
+    // get pointer to i2c bus semaphore
+    AP_HAL::Semaphore* i2c_sem = hal.i2c->get_semaphore();
+
+    // take i2c bus sempahore
+    if (!i2c_sem->take(HAL_SEMAPHORE_BLOCK_FOREVER)){
+        return -1;
+    }        
+
+    // Init the sensor
+    //  Reset the device
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->pwr_mgmt_1, 
+                           BIT_RESET);
+    hal.scheduler->delay(100);
+    
+    //  Wake up the chip
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->pwr_mgmt_1, 
+                           0x00);
+    
+    // Check product revision
+    //  This registers are not documented in the register map.
+    uint8_t buff[6];
+    if (hal.i2c->readRegisters(st.hw->addr, st.reg->accel_offs, 6, buff) != 0) {
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: couldn't read the registers to determine revision"));
+        goto failed;          
+    }    
+    uint8_t rev;
+    rev = ((buff[5] & 0x01) << 2) | ((buff[3] & 0x01) << 1) |
+        (buff[1] & 0x01);
+
+    // Set gyro full-scale range [250, 500, 1000, 2000]
+    if (mpu_set_gyro_fsr(2000)){
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_set_gyro_fsr.\n"));
+        goto failed;
+    }
+    // Set the accel full-scale range
+    if (mpu_set_accel_fsr(2)){
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_set_accel_fsr.\n"));
+        goto failed;    
+    }
+    // Set digital low pass filter (using _default_filter_hz, 20 for 100 Hz of sample rate)
+    if (mpu_set_lpf(_default_filter_hz)){
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_set_lpf.\n"));
+        goto failed;    
+    }
+    // Set sampling rate (value must be between 4Hz and 1KHz)
+    if (mpu_set_sample_rate(800)){
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_set_sample_rate.\n"));
+        goto failed;    
+    }
+    // Select which sensors are pushed to FIFO.
+    sensors = INV_XYZ_ACCEL| INV_XYZ_GYRO;
+    if (mpu_configure_fifo(sensors)){
+        hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_configure_fifo.\n"));
+        goto failed;    
+    }
+
+    // For now the compass is not used.
+    // TODO adjust the functions to the ArduPilot API
+
+    // setup_compass();
+    // if (mpu_set_compass_sample_rate(10, 400))
+    //     return -1;
+
+    mpu_set_sensors(sensors);
+
+    // Set the filter frecuency (_mpu6000_filter configured to the default value, check AP_InertialSensor.cpp)
+    _set_filter_frequency(_mpu6000_filter);
+
+    // give back i2c semaphore
+    i2c_sem->give();
+    // start the timer process to read samples    
+    hal.scheduler->register_timer_process(AP_HAL_MEMBERPROC(&AP_InertialSensor_Flymaple::_accumulate));
+    return AP_PRODUCT_ID_PIXHAWK_FIRE_CAPE;
+
+    failed:
+        // give back i2c semaphore
+        i2c_sem->give();
+        return -1;
+}
+
+/**
+ *  @brief      Set the gyro full-scale range.
+ *  @param[in]  fsr Desired full-scale range.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_gyro_fsr(uint16_t fsr)
+{
+    uint8_t data;
+
+    switch (fsr) {
+    case 250:
+        data = INV_FSR_250DPS << 3;
+        break;
+    case 500:
+        data = INV_FSR_500DPS << 3;
+        break;
+    case 1000:
+        data = INV_FSR_1000DPS << 3;
+        break;
+    case 2000:
+        data = INV_FSR_2000DPS << 3;
+        break;
+    default:
+        return -1;
+    }
+
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->gyro_cfg,
+                           data);
+    return 0;
+}
+
+/**
+ *  @brief      Set the accel full-scale range.
+ *  @param[in]  fsr Desired full-scale range.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_accel_fsr(uint8_t fsr)
+{
+    uint8_t data;
+
+    switch (fsr) {
+    case 2:
+        data = INV_FSR_2G << 3;
+        break;
+    case 4:
+        data = INV_FSR_4G << 3;
+        break;
+    case 8:
+        data = INV_FSR_8G << 3;
+        break;
+    case 16:
+        data = INV_FSR_16G << 3;
+        break;
+    default:
+        return -1;
+    }
+
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->accel_cfg,
+                           data);
+    return 0;
+}
+
+/**
+ *  @brief      Set digital low pass filter.
+ *  The following LPF settings are supported: 188, 98, 42, 20, 10, 5.
+ *  @param[in]  lpf Desired LPF setting.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_lpf(uint16_t lpf)
+{
+    uint8_t data;
+
+    if (lpf >= 188){
+        data = INV_FILTER_188HZ;
+    }
+    else if (lpf >= 98){
+        data = INV_FILTER_98HZ;
+    }
+    else if (lpf >= 42){
+        data = INV_FILTER_42HZ;
+    }
+    else if (lpf >= 20){
+        data = INV_FILTER_20HZ;
+    }
+    else if (lpf >= 10){
+        data = INV_FILTER_10HZ;
+    }
+    else {
+        data = INV_FILTER_5HZ;
+    }
+
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->lpf,
+                           data);
+    return 0;
+}
+
+/**
+ *  @brief      Set sampling rate.
+ *  Sampling rate must be between 4Hz and 1kHz.
+ *  @param[in]  rate    Desired sampling rate (Hz).
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_sample_rate(uint16_t rate)
+{
+    uint8_t data;
+    // uint16_t sample_rate;
+
+    if (rate < 4){
+        rate = 4;
+    }
+    else if (rate > 1000){
+        rate = 1000;
+    }
+
+    data = 1000 / rate - 1;
+    hal.i2c->writeRegister(st.hw->addr, 
+                               st.reg->rate_div,
+                               data);
+    
+    // sample_rate = 1000 / (1 + data);
+    // mpu_set_compass_sample_rate(min(sample_rate, MAX_COMPASS_SAMPLE_RATE), rate);
+
+    return 0;
+}
+
+/**
+ *  @brief      Set compass sampling rate.
+ *  The compass on the auxiliary I2C bus is read by the MPU hardware at a
+ *  maximum of 100Hz. The actual rate can be set to a fraction of the gyro
+ *  sampling rate.
+ *
+ *  \n WARNING: The new rate may be different than what was requested. Call
+ *  mpu_get_compass_sample_rate to check the actual setting.
+ *  @param[in]  rate    Desired compass sampling rate (Hz).
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_compass_sample_rate(uint16_t rate, uint16_t chip_sample_rate)
+{
+    uint8_t div;
+    if (!rate || rate > MAX_COMPASS_SAMPLE_RATE){
+        return -1;
+    }
+
+    div = chip_sample_rate / rate - 1;
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->s4_ctrl,
+                           div);
+    return 0;
+}
+
+/**
+ *  @brief      Select which sensors are pushed to FIFO.
+ *  @e sensors can contain a combination of the following flags:
+ *  \n INV_X_GYRO, INV_Y_GYRO, INV_Z_GYRO
+ *  \n INV_XYZ_GYRO
+ *  \n INV_XYZ_ACCEL
+ *  @param[in]  sensors Mask of sensors to push to FIFO.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_configure_fifo(uint8_t sensors)
+{
+    int16_t result = 0;
+
+    /* Compass data isn't going into the FIFO. Stop trying. */
+    sensors &= ~INV_XYZ_COMPASS;
+
+    // Enable or disable the interrupts
+    // set_int_enable(1);
+    set_int_enable(0);
+    if (sensors) {
+        if (mpu_reset_fifo(sensors)) {            
+            return -1;
+        }
+    }
+    return result;
+}
+
+/**
+ *  @brief      Enable/disable data ready interrupt.
+ *  If the DMP is on, the DMP interrupt is enabled. Otherwise, the data ready
+ *  interrupt is used.
+ *  @param[in]  enable      1 to enable interrupt.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::set_int_enable(uint8_t enable)
+{
+    uint8_t tmp;
+
+    if (enable){
+        tmp = BIT_DATA_RDY_EN;
+    }
+    else {
+        tmp = 0x00;
+    }
+    hal.i2c->writeRegister(st.hw->addr, 
+                           st.reg->int_enable,
+                           tmp);
+    return 0;
+}
+
+/**
+ *  @brief  Reset FIFO read/write pointers.
+ *  @return 0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_reset_fifo(uint8_t sensors)
+{
+    uint8_t data;
+
+    data = 0;
+    hal.i2c->writeRegister(st.hw->addr,st.reg->int_enable, data);
+    hal.i2c->writeRegister(st.hw->addr,st.reg->fifo_en, data);
+    hal.i2c->writeRegister(st.hw->addr,st.reg->user_ctrl, data);
+    data = BIT_FIFO_RST;
+    hal.i2c->writeRegister(st.hw->addr,st.reg->user_ctrl, data);
+
+    data = BIT_FIFO_EN;
+    // data = BIT_FIFO_EN | BIT_AUX_IF_EN;
+    hal.i2c->writeRegister(st.hw->addr,st.reg->user_ctrl, data);
+    hal.scheduler->delay(50);
+
+    // interrupts for the DMP
+    // data = BIT_DATA_RDY_EN;
+    data = 0;
+    hal.i2c->writeRegister(st.hw->addr,st.reg->int_enable, data);
+    // enable FIFO
+    hal.i2c->writeRegister(st.hw->addr,st.reg->fifo_en, sensors);
+    return 0;
+}
+
+
+/**
+ *  @brief      Turn specific sensors on/off.
+ *  @e sensors can contain a combination of the following flags:
+ *  \n INV_X_GYRO, INV_Y_GYRO, INV_Z_GYRO
+ *  \n INV_XYZ_GYRO
+ *  \n INV_XYZ_ACCEL
+ *  \n INV_XYZ_COMPASS
+ *  @param[in]  sensors    Mask of sensors to wake.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_set_sensors(uint8_t sensors)
+{
+    uint8_t data;
+    // uint8_t user_ctrl;
+
+    if (sensors & INV_XYZ_GYRO){
+        data = INV_CLK_PLL;
+    }
+    else if (sensors){
+        data = 0;
+    }
+    else {
+        data = BIT_SLEEP;
+    }
+    hal.i2c->writeRegister(st.hw->addr,st.reg->pwr_mgmt_1, data);
+    data = 0;
+    if (!(sensors & INV_X_GYRO)){
+        data |= BIT_STBY_XG;
+    }
+    if (!(sensors & INV_Y_GYRO)){
+        data |= BIT_STBY_YG;
+    }
+    if (!(sensors & INV_Z_GYRO)){
+        data |= BIT_STBY_ZG;
+    }
+    if (!(sensors & INV_XYZ_ACCEL)){
+        data |= BIT_STBY_XYZA;
+    }
+    hal.i2c->writeRegister(st.hw->addr,st.reg->pwr_mgmt_2, data);
+
+    hal.scheduler->delay(50);
+    return 0;
+}
+
+
+/**
+ *  @brief      Get one packet from the FIFO.
+ *  If @e sensors does not contain a particular sensor, disregard the data
+ *  returned to that pointer.
+ *  \n @e sensors can contain a combination of the following flags:
+ *  \n INV_X_GYRO, INV_Y_GYRO, INV_Z_GYRO
+ *  \n INV_XYZ_GYRO
+ *  \n INV_XYZ_ACCEL
+ *  \n If the FIFO has no new data, @e sensors will be zero.
+ *  \n If the FIFO is disabled, @e sensors will be zero and this function will
+ *  return a non-zero error code.
+ *  @param[out] gyro        Gyro data in hardware units.
+ *  @param[out] accel       Accel data in hardware units.
+ *  @param[out] timestamp   Timestamp in milliseconds.
+ *  @param[out] sensors     Mask of sensors read from FIFO.
+ *  @param[out] more        Number of remaining packets.
+ *  @return     0 if successful.
+ */
+int16_t AP_InertialSensor_Flymaple::mpu_read_fifo(int16_t *gyro, int16_t *accel, uint32_t timestamp,
+        uint8_t *sensors, uint8_t *more)
+{
+    /* Assumes maximum packet size is gyro (6) + accel (6). */
+    uint8_t data[12];
+    uint8_t packet_size = 0;
+    uint16_t fifo_count, index = 0;
+    uint8_t sensors_aux = INV_XYZ_ACCEL| INV_XYZ_GYRO;
+
+    sensors[0] = 0;
+    // We assume we want gyro and accel values
+    packet_size = 12;
+
+    // fifo_count_h register contains the number of samples in the FIFO
+    hal.i2c->readRegisters(st.hw->addr, st.reg->fifo_count_h, 2, data);
+
+    fifo_count = (data[0] << 8) | data[1];
+    if (fifo_count < packet_size){
+        return 0;
+    }
+    // hal.console->printf_P(PTR("FIFO count: %hd\n", fifo_count));
+    if (fifo_count > (st.hw->max_fifo >> 1)) {
+        /* FIFO is 50% full, better check overflow bit. */        
+        hal.i2c->readRegister(st.hw->addr, st.reg->int_status, data);
+        if (data[0] & BIT_FIFO_OVERFLOW) {
+            mpu_reset_fifo(sensors_aux);
+            return -2;
+        }
+    }
+
+    timestamp = hal.scheduler->millis();    
+    // read the data
+    hal.i2c->readRegisters(st.hw->addr, st.reg->fifo_r_w, packet_size, data);
+    more[0] = fifo_count / packet_size - 1;
+    sensors[0] = 0;
+
+    if (index != packet_size) {
+        accel[0] = (data[index+0] << 8) | data[index+1];
+        accel[1] = (data[index+2] << 8) | data[index+3];
+        accel[2] = (data[index+4] << 8) | data[index+5];
+        sensors[0] |= INV_XYZ_ACCEL;
+        index += 6;
+    }
+    if (index != packet_size) {
+        gyro[0] = (data[index+0] << 8) | data[index+1];
+        sensors[0] |= INV_X_GYRO;
+        index += 2;
+    }
+    if (index != packet_size) {
+        gyro[1] = (data[index+0] << 8) | data[index+1];
+        sensors[0] |= INV_Y_GYRO;
+        index += 2;
+    }
+    if (index != packet_size) {
+        gyro[2] = (data[index+0] << 8) | data[index+1];
+        sensors[0] |= INV_Z_GYRO;
+        index += 2;
+    }
+    return 0;
+}
+
+/**
+ *  @brief      Accumulate values from accels and gyros. 
+ *
+ *     This method is called periodically by the scheduler.
+ *
+ */
+void AP_InertialSensor_Flymaple::_accumulate(void){
+    // get pointer to i2c bus semaphore
+    AP_HAL::Semaphore* i2c_sem = hal.i2c->get_semaphore();
+
+    // take i2c bus sempahore
+    if (!i2c_sem->take_nonblocking()){
+        return;
+    }
+
+    // Read accelerometer FIFO to find out how many samples are available
+    /* Assumes maximum packet size is gyro (6) + accel (6). */
+    uint8_t data[6];
+    uint8_t packet_size = 12;
+    uint16_t fifo_count, index = 0;
+    int16_t accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z;
+
+        // read the data
+        // TODO check whether it's possible to read all the packages in a single call
+        hal.i2c->readRegisters(st.hw->addr, 0x3b, 6, data);
+        // TODO, remove all the checking since it's being configured this way.
+            accel_x = (int16_t) (data[index+0] << 8) | data[index+1];
+            accel_y = (int16_t) (data[index+2] << 8) | data[index+3];
+            accel_z = (int16_t) (data[index+4] << 8) | data[index+5];
+
+	hal.i2c->readRegisters(st.hw->addr, 0x43, 6, data);
+            gyro_x = (int16_t) (data[index+0] << 8) | data[index+1];
+            gyro_y = (int16_t) (data[index+2] << 8) | data[index+3];
+            gyro_z = (int16_t) (data[index+4] << 8) | data[index+5];
+
+        // TODO Revisit why AP_InertialSensor_L3G4200D uses a minus sign in the y and z component. Maybe this
+        //  is because the sensor is placed in the bottom side of the board?
+        _accel_filtered = Vector3f(
+            _accel_filter_x.apply(accel_x), 
+            _accel_filter_y.apply(accel_y), 
+            _accel_filter_z.apply(accel_z));
+        
+        _gyro_filtered = Vector3f(
+            _gyro_filter_x.apply(gyro_x), 
+            _gyro_filter_y.apply(gyro_y), 
+            _gyro_filter_z.apply(gyro_z));
+
+    // give back i2c semaphore
+    i2c_sem->give();
+}
+
+bool AP_InertialSensor_Flymaple::_sample_available(void)
+{
+    uint64_t tnow =  hal.scheduler->micros();
+    while (tnow - _last_sample_timestamp > _sample_period_usec) {
+        _have_sample_available = true;
+        _last_sample_timestamp += _sample_period_usec;
+    }
+    return _have_sample_available;    
+}
+
+bool AP_InertialSensor_Flymaple::wait_for_sample(uint16_t timeout_ms)
+{
+    if (_sample_available()) {
+        return true;
+    }
+    uint32_t start = hal.scheduler->millis();
+    while ((hal.scheduler->millis() - start) < timeout_ms) {
+        uint64_t tnow = hal.scheduler->micros(); 
+        // we spin for the last timing_lag microseconds. Before that
+        // we yield the CPU to allow IO to happen
+        const uint16_t timing_lag = 400;
+        if (_last_sample_timestamp + _sample_period_usec > tnow+timing_lag) {
+            hal.scheduler->delay_microseconds(_last_sample_timestamp + _sample_period_usec - (tnow+timing_lag));
+        }
+        if (_sample_available()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AP_InertialSensor_Flymaple::update(void) 
 {
-    if (!wait_for_sample(100)) {
+    if (!wait_for_sample(1000)) {
         return false;
     }
     Vector3f accel_scale = _accel_scale[0].get();
 
-    // Not really needed since Flymaple _accumulate runs in the main thread
-    hal.scheduler->suspend_timer_procs();
-
-    // base the time on the gyro timestamp, as that is what is
-    // multiplied by time to integrate in DCM
-    _delta_time = (_last_gyro_timestamp - _last_update_usec) * 1.0e-6f;
-    _last_update_usec = _last_gyro_timestamp;
-
     _previous_accel[0] = _accel[0];
 
+    // hal.scheduler->suspend_timer_procs();
     _accel[0] = _accel_filtered;
-    _accel_samples = 0;
-
     _gyro[0] = _gyro_filtered;
-    _gyro_samples = 0;
-
-    hal.scheduler->resume_timer_procs();
+    // hal.scheduler->resume_timer_procs();
 
     // add offsets and rotation
     _accel[0].rotate(_board_orientation);
 
     // Adjust for chip scaling to get m/s/s
-    _accel[0] *= FLYMAPLE_ACCELEROMETER_SCALE_M_S;
+    ////////////////////////////////////////////////
+    _accel[0] *= Flymaple_ACCEL_SCALE_2G;
 
     // Now the calibration scale factor
     _accel[0].x *= accel_scale.x;
@@ -213,138 +928,33 @@ bool AP_InertialSensor_Flymaple::update(void)
     _gyro[0].rotate(_board_orientation);
 
     // Adjust for chip scaling to get radians/sec
-    _gyro[0] *= FLYMAPLE_GYRO_SCALE_R_S;
+    _gyro[0] *= Flymaple_GYRO_SCALE_2000;
     _gyro[0] -= _gyro_offset[0];
+    ////////////////////////////////////////////////
+
+    _gyro_samples_available = 0;
 
     if (_last_filter_hz != _mpu6000_filter) {
         _set_filter_frequency(_mpu6000_filter);
         _last_filter_hz = _mpu6000_filter;
     }
 
+    _have_sample_available = false;
+
     return true;
 }
 
-bool AP_InertialSensor_Flymaple::get_gyro_health(void) const
-{
-    if (_last_gyro_timestamp == 0) {
-        // not initialised yet, show as healthy to prevent scary GCS
-        // warnings
-        return true;
-    }
-    uint64_t now = hal.scheduler->micros();
-    if ((now - _last_gyro_timestamp) >= (2 * raw_sample_interval_us)) {
-        // gyros have not updated
-        return false;
-    }
-    return true;
-}
-
-bool AP_InertialSensor_Flymaple::get_accel_health(void) const
-{
-    if (_last_accel_timestamp == 0) {
-        // not initialised yet, show as healthy to prevent scary GCS
-        // warnings
-        return true;
-    }
-    uint64_t now = hal.scheduler->micros();
-    if ((now - _last_accel_timestamp) >= (2 * raw_sample_interval_us)) {
-        // gyros have not updated
-        return false;
-    }
-    return true;
-}
-
-float AP_InertialSensor_Flymaple::get_delta_time(void) const
-{
-    return _delta_time;
-}
-
+// TODO review to make sure it matches
 float AP_InertialSensor_Flymaple::get_gyro_drift_rate(void) 
 {
-    // Dont really know this for the ITG-3200.
-    // 0.5 degrees/second/minute
+    // 0.5 degrees/second/minute (a guess)
     return ToRad(0.5/60);
 }
 
-// This needs to get called as often as possible.
-// Its job is to accumulate samples as fast as is reasonable for the accel and gyro
-// sensors.
-// Cant call this from within the system timers, since the long I2C reads (up to 1ms) 
-// with interrupts disabled breaks lots of things
-// Therefore must call this as often as possible from
-// within the mainline and thropttle the reads here to suit the sensors
-void AP_InertialSensor_Flymaple::_accumulate(void)
+// TODO review to make sure it matches
+float AP_InertialSensor_Flymaple::get_delta_time(void) const
 {
-    // get pointer to i2c bus semaphore
-    AP_HAL::Semaphore* i2c_sem = hal.i2c->get_semaphore();
-
-    // take i2c bus sempahore
-    if (!i2c_sem->take(HAL_SEMAPHORE_BLOCK_FOREVER))
-        return;
-
-    // Read accelerometer
-    // ADXL345 is in the default FIFO bypass mode, so the FIFO is not used
-    uint8_t buffer[6];
-    uint64_t now = hal.scheduler->micros();
-    // This takes about 250us at 400kHz I2C speed
-    if ((now - _last_accel_timestamp) >= raw_sample_interval_us
-        && hal.i2c->readRegisters(FLYMAPLE_ACCELEROMETER_ADDRESS, FLYMAPLE_ACCELEROMETER_ADXLREG_DATAX0, 6, buffer) == 0)
-    {
-        // The order is a bit wierd here since the standard we have adopted for Flymaple 
-        // sensor orientation is different to what the board designers intended
-        // Caution, to support alternative chip orientations on other bords, may 
-        // need to add a chip orientation rotate
-        int16_t y = -((((int16_t)buffer[1]) << 8) | buffer[0]);    // chip X axis
-        int16_t x = -((((int16_t)buffer[3]) << 8) | buffer[2]);    // chip Y axis
-        int16_t z = -((((int16_t)buffer[5]) << 8) | buffer[4]);    // chip Z axis
-        _accel_filtered = Vector3f(_accel_filter_x.apply(x),
-                                   _accel_filter_y.apply(y),
-                                   _accel_filter_z.apply(z));
-        _accel_samples++;
-        _last_accel_timestamp = now;
-    }
-
-    // Read gyro
-    now = hal.scheduler->micros();
-    // This takes about 250us at 400kHz I2C speed
-    if ((now - _last_gyro_timestamp) >= raw_sample_interval_us
-        && hal.i2c->readRegisters(FLYMAPLE_GYRO_ADDRESS, FLYMAPLE_GYRO_GYROX_H, 6, buffer) == 0)
-    {
-        // See above re order of samples in buffer
-        int16_t y = -((((int16_t)buffer[0]) << 8) | buffer[1]);    // chip X axis
-        int16_t x = -((((int16_t)buffer[2]) << 8) | buffer[3]);    // chip Y axis
-        int16_t z = -((((int16_t)buffer[4]) << 8) | buffer[5]);    // chip Z axis
-        _gyro_filtered = Vector3f(_gyro_filter_x.apply(x),
-                                  _gyro_filter_y.apply(y),
-                                  _gyro_filter_z.apply(z));
-        _gyro_samples++;
-        _last_gyro_timestamp = now;
-    }
-
-    // give back i2c semaphore
-    i2c_sem->give();
+    return _sample_period_usec * 1.0e-6f;
 }
 
-bool AP_InertialSensor_Flymaple::_sample_available(void)
-{
-    _accumulate();
-    return min(_accel_samples, _gyro_samples) / _sample_divider > 0;
-}
-
-bool AP_InertialSensor_Flymaple::wait_for_sample(uint16_t timeout_ms)
-{
-    if (_sample_available()) {
-        return true;
-    }
-    uint32_t start = hal.scheduler->millis();
-    while ((hal.scheduler->millis() - start) < timeout_ms) {
-        hal.scheduler->delay_microseconds(100);
-        if (_sample_available()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-#endif // CONFIG_HAL_BOARD
-
+#endif

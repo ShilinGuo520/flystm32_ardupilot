@@ -1,7 +1,7 @@
 /// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 
-#ifndef __AP_INERTIAL_SENSOR_FLYMAPLE_H__
-#define __AP_INERTIAL_SENSOR_FLYMAPLE_H__
+#ifndef __AP_INERTIAL_SENSOR_Flymaple_H__
+#define __AP_INERTIAL_SENSOR_Flymaple_H__
 
 #include <AP_HAL.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_FLYMAPLE
@@ -11,47 +11,58 @@
 #include <Filter.h>
 #include <LowPassFilter2p.h>
 
+
 class AP_InertialSensor_Flymaple : public AP_InertialSensor
 {
 public:
 
-    AP_InertialSensor_Flymaple() : AP_InertialSensor() {}
+    AP_InertialSensor_Flymaple();
 
-    /* Concrete implementation of AP_InertialSensor functions: */
+    /* Implementation of AP_InertialSensor functions: */
     bool            update();
-    float        	get_delta_time() const;
+    float           get_delta_time() const;
     float           get_gyro_drift_rate();
     bool            wait_for_sample(uint16_t timeout_ms);
-    bool            get_gyro_health(void) const;
-    bool            get_accel_health(void) const;
-    bool            healthy(void) const { return get_gyro_health() && get_accel_health(); }
 
 private:
     uint16_t        _init_sensor( Sample_rate sample_rate );
-    static          void _accumulate(void);
+    void             _accumulate(void);
     bool            _sample_available();
-    uint64_t        _last_update_usec;
-    float           _delta_time;
-    static Vector3f	_accel_filtered;
-    static uint32_t _accel_samples;
-    static Vector3f	_gyro_filtered;
-    static uint32_t _gyro_samples;
-    static uint64_t _last_accel_timestamp;
-    static uint64_t _last_gyro_timestamp;
-    uint8_t  _sample_divider;
+    // uint64_t        _last_update_usec;
+    Vector3f        _accel_filtered;
+    Vector3f        _gyro_filtered;
+    uint32_t        _sample_period_usec;
+    volatile uint32_t _gyro_samples_available;
+    uint64_t        _last_sample_timestamp;    
+    bool     _have_sample_available;    
 
-    // support for updating filter at runtime
-    uint8_t _last_filter_hz;
-    uint8_t _default_filter_hz;
+    // // support for updating filter at runtime
+    uint8_t         _last_filter_hz;
+    uint8_t          _default_filter_hz;
 
+    int16_t mpu_set_gyro_fsr(uint16_t fsr);
+    int16_t mpu_set_accel_fsr(uint8_t fsr);
+    int16_t mpu_set_lpf(uint16_t lpf);
+    int16_t mpu_set_sample_rate(uint16_t rate);
+    int16_t mpu_set_compass_sample_rate(uint16_t rate, uint16_t chip_sample_rate);
+    int16_t mpu_configure_fifo(uint8_t sensors);
+    int16_t set_int_enable(uint8_t enable);
+    int16_t mpu_reset_fifo(uint8_t sensors);
+    int16_t mpu_set_sensors(uint8_t sensors);
+    int16_t mpu_set_int_latched(uint8_t enable);
+    int16_t mpu_read_fifo(int16_t *gyro, int16_t *accel, uint32_t timestamp, uint8_t *sensors, uint8_t *more);
+
+    // Filter (specify which one)
     void _set_filter_frequency(uint8_t filter_hz);
+
     // Low Pass filters for gyro and accel 
-    static LowPassFilter2p _accel_filter_x;
-    static LowPassFilter2p _accel_filter_y;
-    static LowPassFilter2p _accel_filter_z;
-    static LowPassFilter2p _gyro_filter_x;
-    static LowPassFilter2p _gyro_filter_y;
-    static LowPassFilter2p _gyro_filter_z;
+    LowPassFilter2p _accel_filter_x;
+    LowPassFilter2p _accel_filter_y;
+    LowPassFilter2p _accel_filter_z;
+    LowPassFilter2p _gyro_filter_x;
+    LowPassFilter2p _gyro_filter_y;
+    LowPassFilter2p _gyro_filter_z;
+
 };
 #endif
-#endif // __AP_INERTIAL_SENSOR_FLYMAPLE_H__
+#endif // __AP_INERTIAL_SENSOR_Flymaple_H__
