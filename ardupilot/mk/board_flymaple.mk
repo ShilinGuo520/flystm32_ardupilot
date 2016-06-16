@@ -21,7 +21,7 @@ HARDWARE := leaflabs
 MCU := STM32F103RE
 FAMILY := cortex-m3
 F_CPU := 72000000L
-LINKER := maple_RET6/flash.ld
+LINKER := maple_RET6/jtag.ld
 HARDWARE_CORE := maple
 UPLOADER := dfu-util
 USBID := 1EAF:0003
@@ -31,7 +31,7 @@ LD_MEM_DIR := sram_64k_flash_512k
 #
 # Tool options
 #
-DEFINES         =   -DF_CPU=$(F_CPU) -DMCU_$(MCU) -DBOARD_$(BOARD) -DERROR_LED_PORT=GPIOA -DERROR_LED_PIN=5 -DVECT_TAB_FLASH 
+DEFINES         =   -DF_CPU=$(F_CPU) -DMCU_$(MCU) -DBOARD_$(BOARD) -DERROR_LED_PORT=GPIOA -DERROR_LED_PIN=5 -DVECT_TAB_BASE
 DEFINES        +=   -DSKETCH=\"$(SKETCH)\" -DAPM_BUILD_DIRECTORY=APM_BUILD_$(SKETCH)
 DEFINES        +=   $(EXTRAFLAGS) # from user config.mk
 DEFINES        +=   -DCONFIG_HAL_BOARD=$(HAL_BOARD)
@@ -51,7 +51,7 @@ NATIVE_CPULDFLAGS   = -g
 NATIVE_OPTFLAGS     = -O0 -g
 
 ARM_CPUFLAGS        = -mcpu=$(FAMILY) -march=armv7-m -mthumb -DBOARD_maple -DMCU_$(MCU)
-ARM_CPULDFLAGS      = -T$(LIBMAPLE_PATH)/support/ld/flash.ld -L $(LIBMAPLE_PATH)/support/ld/stm32/series/stm32f1/performance -L $(LIBMAPLE_PATH)/support/ld/stm32/mem/$(LD_MEM_DIR) -L $(LIBMAPLE_PATH)/support/ld -L $(LIBMAPLE_PATH)/support/ld/toolchains/generic 
+ARM_CPULDFLAGS      = -T$(LIBMAPLE_PATH)/support/ld/jtag.ld -L $(LIBMAPLE_PATH)/support/ld/stm32/series/stm32f1/performance -L $(LIBMAPLE_PATH)/support/ld/stm32/mem/$(LD_MEM_DIR) -L $(LIBMAPLE_PATH)/support/ld -L $(LIBMAPLE_PATH)/support/ld/toolchains/generic 
 ARM_OPTFLAGS        = -Os
 
 CPUFLAGS= $($(TOOLCHAIN)_CPUFLAGS)
