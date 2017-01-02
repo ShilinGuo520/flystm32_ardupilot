@@ -337,9 +337,9 @@ static void pre_arm_checks(bool display_failure)
         // check accelerometers have been calibrated
         if(!ins.calibrated()) {
             if (display_failure) {
-                gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: INS not calibrated"));
+                //gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: INS not calibrated"));
             }
-            return;
+            //return;
         }
 
         // check accels are healthy
@@ -406,9 +406,9 @@ static void pre_arm_checks(bool display_failure)
     if ((g.arming_check == ARMING_CHECK_ALL) || (g.arming_check & ARMING_CHECK_VOLTAGE)) {
         if(hal.analogin->board_voltage() < BOARD_VOLTAGE_MIN || hal.analogin->board_voltage() > BOARD_VOLTAGE_MAX) {
             if (display_failure) {
-                gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: Check Board Voltage"));
+                //gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: Check Board Voltage"));
             }
-            return;
+            //return;
         }
     }
 #endif
