@@ -449,8 +449,6 @@ uint16_t AP_InertialSensor_Flymaple::_init_sensor( Sample_rate sample_rate )
 
     // give back i2c semaphore
     i2c_sem->give();
-    // start the timer process to read samples    
-    hal.scheduler->register_timer_process(AP_HAL_MEMBERPROC(&AP_InertialSensor_Flymaple::_accumulate));
     return AP_PRODUCT_ID_PIXHAWK_FIRE_CAPE;
 
     failed:
@@ -870,6 +868,7 @@ void AP_InertialSensor_Flymaple::_accumulate(void){
 bool AP_InertialSensor_Flymaple::_sample_available(void)
 {
     uint64_t tnow =  hal.scheduler->micros();
+    _accumulate();
     while (tnow - _last_sample_timestamp > _sample_period_usec) {
         _have_sample_available = true;
         _last_sample_timestamp += _sample_period_usec;
