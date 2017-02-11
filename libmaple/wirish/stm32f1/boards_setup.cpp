@@ -48,7 +48,7 @@
 // works for F103 performance line MCUs, which is all that LeafLabs
 // currently officially supports).
 #ifndef BOARD_RCC_PLLMUL
-#define BOARD_RCC_PLLMUL RCC_PLLMUL_9
+#define BOARD_RCC_PLLMUL RCC_PLLMUL_6
 #endif
 
 namespace wirish {
