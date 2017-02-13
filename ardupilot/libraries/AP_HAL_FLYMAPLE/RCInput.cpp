@@ -48,89 +48,42 @@ volatile uint32_t FLYMAPLERCInput::_last_input_interrupt_time = 0; // Last time 
 FLYMAPLERCInput::FLYMAPLERCInput()
 {}
 
-// This interrupt triggers on a negative transiution of the PPM-SIM pin
-void FLYMAPLERCInput::_timer_capt_cb(void)
-{
-    _last_input_interrupt_time = hal.scheduler->millis();
-
-    static uint16 previous_count;
-    static uint8  channel_ctr;
-
-    // Read the CCR register, where the time count since the last input pin transition will be
-    timer_dev *tdev = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_device;
-    uint8 timer_channel = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_channel;
-    uint16 current_count = timer_get_compare(tdev, timer_channel);
-    uint32 sr = (tdev->regs).gen->SR;
-    uint32 overcapture_mask = (1 << (TIMER_SR_CC1OF_BIT + timer_channel - 1));
-
-    if (sr & overcapture_mask)
-    {
-	// Hmmm, lost an interrupt somewhere? Ignore this sample
-	(tdev->regs).gen->SR &= ~overcapture_mask; // Clear overcapture flag
-	return;
-    }
-
-    uint16_t pulse_width;
-    if (current_count < previous_count) {
-        pulse_width = current_count + FLYMAPLE_TIMER_RELOAD - previous_count;
-    } else {
-        pulse_width = current_count - previous_count;
-    }
-
-    // Pulse sequence repetition rate is about 22ms.
-    // Longest servo pulse is about 1.8ms
-    // Shortest servo pulse is about 0.5ms
-    // Shortest possible PPM sync pulse with 10 channels is about 4ms = 22 - (10 channels * 1.8)
-    if (pulse_width > 8000) { // 4ms
-        // sync pulse detected.  Pass through values if at least a minimum number of channels received
-        if( channel_ctr >= FLYMAPLE_RC_INPUT_MIN_CHANNELS ) {
-            _valid_channels = channel_ctr;
-	    // Clear any remaining channels, in case they were corrupted during a connect or something
-	    while (channel_ctr < FLYMAPLE_RC_INPUT_NUM_CHANNELS)
-		_pulse_capt[channel_ctr++] = 0;
-        }
-        channel_ctr = 0;
-    } else {
-
-//	if (channel_ctr == 0)
-//	    hal.uartA->printf("ch 0 %d\n", pulse_width);
-
-        if (channel_ctr < FLYMAPLE_RC_INPUT_NUM_CHANNELS) {
-            _pulse_capt[channel_ctr] = pulse_width;
-            channel_ctr++;
-            if (channel_ctr == FLYMAPLE_RC_INPUT_NUM_CHANNELS) {
-                _valid_channels = FLYMAPLE_RC_INPUT_NUM_CHANNELS;
-            }
-        }
-    }
-    previous_count = current_count;
-}
-
 void FLYMAPLERCInput::init(void* machtnichts)
 {
     /* initialize overrides */
     clear_overrides();
-
-    // Configure pin 6 input to timer 1 CH1 bRin Input Capture mode
-    pinMode(FLYMAPLE_RC_INPUT_PIN, INPUT_PULLDOWN);
-
-    timer_dev *tdev = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_device;
-    uint8 timer_channel = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_channel;
-    timer_pause(tdev); // disabled
-    timer_set_prescaler(tdev, (CYCLES_PER_MICROSECOND/2) - 1); // 2MHz = 0.5us timer ticks
-    timer_set_reload(tdev, FLYMAPLE_TIMER_RELOAD-1);
-    // Without a filter, can get triggering on the wrong edge and other problems.
-    (tdev->regs).gen->CCMR1 = TIMER_CCMR1_CC1S_INPUT_TI1 | (3 << 4); // no prescaler, input from T1, filter internal clock, N=8
-    (tdev->regs).gen->CCER  = TIMER_CCER_CC1P | TIMER_CCER_CC1E; // falling edge, enable capture
-    timer_attach_interrupt(tdev, timer_channel, _timer_capt_cb);
-    timer_generate_update(tdev);
-    timer_resume(tdev); // reenabled
+	/* Configuration uartC use for RCInput */
+    hal.uartC->begin(115200, 128, 128); 
+    hal.uartC->printf(" \n\rInit uartC in RCInput");
 }
 
 bool FLYMAPLERCInput::new_input() {
-    if ((hal.scheduler->millis() - _last_input_interrupt_time) > 50)
-	_valid_channels = 0; // Lost RC Input?
-    return _valid_channels != 0;
+	uint8_t temp[2] = {0, 0};
+	uint8_t ch = 0;
+	uint8_t i = 0;
+	if (hal.uartC->available()) {
+		while(hal.uartC->available()) {
+			temp[1] = temp[0];
+			temp[0] = hal.uartC->read();
+			if((temp[0] == 'H') && (temp[1] == 'C')) {
+				temp[0] = temp[1] = 0;
+				if(hal.uartC->available()) 
+					ch = hal.uartC->read();
+				if(hal.uartC->available())
+					temp[0] = hal.uartC->read();
+				if(hal.uartC->available())
+					temp[1] = hal.uartC->read();
+				if((temp[0] != 0) || (temp[1] != 0)) {
+					_pulse_capt[ch - 1] = (temp[0] << 8) | temp[1];
+					temp[0] = temp[1] = 0;
+				}
+			}
+		}
+		_valid_channels = 8;
+	} else {
+		_valid_channels = 0;
+	}
+	return _valid_channels;
 }
 
 uint8_t FLYMAPLERCInput::num_channels() {
