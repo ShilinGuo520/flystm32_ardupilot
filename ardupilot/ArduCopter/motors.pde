@@ -337,9 +337,9 @@ static void pre_arm_checks(bool display_failure)
         // check accelerometers have been calibrated
         if(!ins.calibrated()) {
             if (display_failure) {
-                //gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: INS not calibrated"));
+                gcs_send_text_P(SEVERITY_HIGH,PSTR("PreArm: INS not calibrated"));
             }
-            //return;
+            return;
         }
 
         // check accels are healthy
