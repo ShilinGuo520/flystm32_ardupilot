@@ -414,7 +414,7 @@ uint16_t AP_InertialSensor_Flymaple::_init_sensor( Sample_rate sample_rate )
         goto failed;
     }
     // Set the accel full-scale range
-    if (mpu_set_accel_fsr(2)){
+    if (mpu_set_accel_fsr(8)){
         hal.scheduler->panic(PSTR("AP_InertialSensor_Flymaple: mpu_set_accel_fsr.\n"));
         goto failed;    
     }
@@ -916,7 +916,7 @@ bool AP_InertialSensor_Flymaple::update(void)
 
     // Adjust for chip scaling to get m/s/s
     ////////////////////////////////////////////////
-    _accel[0] *= Flymaple_ACCEL_SCALE_2G;
+    _accel[0] *= Flymaple_ACCEL_SCALE_8G;
 
     // Now the calibration scale factor
     _accel[0].x *= accel_scale.x;
