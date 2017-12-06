@@ -125,7 +125,7 @@ ALLDEPS			=	$(ALLOBJS:%.o=%.d)
 # Targets
 #
 
-all: $(SKETCHELF) $(SKETCHEEP) $(SKETCHHEX)
+all: $(SKETCHELF) $(SKETCHEEP) $(SKETCHHEX) $(SKETCHBIN)
 
 print-%:
 	echo "$*=$($*)"
@@ -166,7 +166,6 @@ $(SKETCHHEX):	$(SKETCHELF)
 # Create the bin file
 $(SKETCHBIN):	$(SKETCHELF)
 	$(RULEHDR)
-	$(v)$(OBJCOPY) -v -O binary $< $@
 
 # Create the eep file
 $(SKETCHEEP):	$(SKETCHELF)
