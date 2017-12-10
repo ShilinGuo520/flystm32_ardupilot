@@ -92,7 +92,8 @@ void FLYMAPLERCOutput::write(uint8_t ch, uint16_t period_us)
     if (ch >= FLYMAPLE_RC_OUTPUT_NUM_CHANNELS)
 	return;
     uint8_t pin = _channel_to_flymaple_pin(ch);
-    pwmWrite(pin, (period_us * _clocks_per_msecond[ch]) / 1000);
+    period_us = (period_us - 920) * 40;
+    pwmWrite(pin, period_us);
 }
 
 void FLYMAPLERCOutput::write(uint8_t ch, uint16_t* period_us, uint8_t len)
@@ -109,7 +110,7 @@ uint16_t FLYMAPLERCOutput::read(uint8_t ch)
     timer_dev *tdev = PIN_MAP[pin].timer_device;
     uint8 timer_channel = PIN_MAP[pin].timer_channel;
     __io uint32 *ccr = &(tdev->regs).gen->CCR1 + (timer_channel - 1);
-    return *ccr * 1000 / _clocks_per_msecond[ch];
+    return ((*ccr) / 40 ) + 920;
 }
 
 void FLYMAPLERCOutput::read(uint16_t* period_us, uint8_t len)
