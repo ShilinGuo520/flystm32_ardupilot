@@ -108,29 +108,36 @@ void FLYMAPLERCInput::_timer_capt_cb(void)
 
 void FLYMAPLERCInput::init(void* machtnichts)
 {
-    /* initialize overrides */
-    clear_overrides();
-
-    // Configure pin 6 input to timer 1 CH1 bRin Input Capture mode
-    pinMode(FLYMAPLE_RC_INPUT_PIN, INPUT_PULLDOWN);
-
-    timer_dev *tdev = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_device;
-    uint8 timer_channel = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_channel;
-    timer_pause(tdev); // disabled
-    timer_set_prescaler(tdev, (CYCLES_PER_MICROSECOND/2) - 1); // 2MHz = 0.5us timer ticks
-    timer_set_reload(tdev, FLYMAPLE_TIMER_RELOAD-1);
-    // Without a filter, can get triggering on the wrong edge and other problems.
-    (tdev->regs).gen->CCMR1 = TIMER_CCMR1_CC1S_INPUT_TI1 | (3 << 4); // no prescaler, input from T1, filter internal clock, N=8
-    (tdev->regs).gen->CCER  = TIMER_CCER_CC1P | TIMER_CCER_CC1E; // falling edge, enable capture
-    timer_attach_interrupt(tdev, timer_channel, _timer_capt_cb);
-    timer_generate_update(tdev);
-    timer_resume(tdev); // reenabled
+   /* Configuration uartC use for RCInput */
+    hal.RC_UART->begin(115200, 128, 128); 
+    hal.RC_UART->printf(" \n\rInit uartC in RCInput");
 }
 
+
+/*
+ * |start|start| CH1 | CH2 | CH3 | CH4 | CH5 | CH6 | CH7 | CH8 |
+ * |0x1F |0x1F |0xXX |0xXX |0xXX |0xXX |0xXX |0xXX |0xXX |0xXX |
+ */
+
 bool FLYMAPLERCInput::new_input() {
-    if ((hal.scheduler->millis() - _last_input_interrupt_time) > 50)
-	_valid_channels = 0; // Lost RC Input?
-    return _valid_channels != 0;
+	uint8_t temp = 0;
+	uint8_t ch = 0;	
+
+	if (hal.RC_UART->available()) {
+		
+		temp = hal.RC_UART->read();
+		if ((temp == 0x1F) && (hal.RC_UART->available())) {
+			temp = hal.RC_UART->read();
+			if ((temp == 0x1F) && (hal.RC_UART->available())) {
+				for (; ((ch < 8) && (hal.RC_UART->available())); ch++) {
+					_pulse_capt[ch] = hal.RC_UART->read();
+				}
+			}
+		}
+	}
+	_valid_channels = ch;
+
+	return _valid_channels != 0;
 }
 
 uint8_t FLYMAPLERCInput::num_channels() {
@@ -145,45 +152,20 @@ static inline uint16_t constrain_pulse(uint16_t p) {
 }
 
 uint16_t FLYMAPLERCInput::read(uint8_t ch) {
-    timer_dev *tdev = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_device;
-    uint8 timer_channel = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_channel;
-
     /* constrain ch */
     if (ch >= FLYMAPLE_RC_INPUT_NUM_CHANNELS) 
 	return 0;
-    /* grab channel from isr's memory in critical section*/
-    timer_disable_irq(tdev, timer_channel);
-    uint16_t capt = _pulse_capt[ch];
-    timer_enable_irq(tdev, timer_channel);
-    /* scale _pulse_capt from 0.5us units to 1us units. */
-    uint16_t pulse = constrain_pulse(capt >> 1);
-    /* Check for override */
-    uint16_t over = _override[ch];
-    return (over == 0) ? pulse : over;
+
+    return _pulse_capt[ch];
 }
 
 uint8_t FLYMAPLERCInput::read(uint16_t* periods, uint8_t len) {
-    timer_dev *tdev = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_device;
-    uint8 timer_channel = PIN_MAP[FLYMAPLE_RC_INPUT_PIN].timer_channel;
 
     /* constrain len */
     if (len > FLYMAPLE_RC_INPUT_NUM_CHANNELS) 
 	len = FLYMAPLE_RC_INPUT_NUM_CHANNELS;
-    /* grab channels from isr's memory in critical section */
-    timer_disable_irq(tdev, timer_channel);
     for (uint8_t i = 0; i < len; i++) {
         periods[i] = _pulse_capt[i];
-    }
-    timer_enable_irq(tdev, timer_channel);
-    /* Outside of critical section, do the math (in place) to scale and
-     * constrain the pulse. */
-    for (uint8_t i = 0; i < len; i++) {
-        /* scale _pulse_capt from 0.5us units to 1us units. */
-        periods[i] = constrain_pulse(periods[i] >> 1);
-        /* check for override */
-        if (_override[i] != 0) {
-            periods[i] = _override[i];
-        }
     }
     return _valid_channels;
 }

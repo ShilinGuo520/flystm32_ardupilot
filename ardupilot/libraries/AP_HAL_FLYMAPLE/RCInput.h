@@ -25,6 +25,8 @@
 
 #define FLYMAPLE_RC_INPUT_MIN_CHANNELS 5     // for ppm sum we allow less than 8 channels to make up a valid packet
 
+#define RC_UART uartB
+
 class AP_HAL_FLYMAPLE_NS::FLYMAPLERCInput : public AP_HAL::RCInput {
 public:
     FLYMAPLERCInput();
