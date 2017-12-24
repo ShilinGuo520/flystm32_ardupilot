@@ -97,7 +97,7 @@ static void init_ardupilot()
 
     // GPS serial port.
     //
-#if GPS_PROTOCOL != GPS_PROTOCOL_IMU
+#if (GPS_PROTOCOL != GPS_PROTOCOL_IMU) && (CONFIG_HAL_BOARD != HAL_BOARD_FLYMAPLE)
     // standard gps running. Note that we need a 256 byte buffer for some
     // GPS types (eg. UBLOX)
     hal.uartB->begin(38400, 256, 16);
