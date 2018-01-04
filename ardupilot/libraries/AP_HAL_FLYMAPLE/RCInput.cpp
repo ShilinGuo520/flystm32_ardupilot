@@ -109,7 +109,7 @@ void FLYMAPLERCInput::_timer_capt_cb(void)
 void FLYMAPLERCInput::init(void* machtnichts)
 {
    /* Configuration uartC use for RCInput */
-    hal.RC_UART->begin(115200, 128, 128); 
+    hal.RC_UART->begin(19200, 128, 128); 
     hal.RC_UART->printf(" \n\rInit uartC in RCInput");
 }
 
@@ -130,7 +130,7 @@ bool FLYMAPLERCInput::new_input() {
 			temp = hal.RC_UART->read();
 			if ((temp == 0x1F) && (hal.RC_UART->available())) {
 				for (; ((ch < 8) && (hal.RC_UART->available())); ch++) {
-					_pulse_capt[ch] = hal.RC_UART->read();
+					_pulse_capt[ch] = 980 + (hal.RC_UART->read() * 4 );
 				}
 			}
 		}
